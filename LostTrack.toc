@@ -1,0 +1,8 @@
+## Interface: 30300
+## Title: Lost Track
+## Notes: Switches a hunter's tracking to the target's creature type and restores the previous one when the target is gone. Use /lt.
+## Author: Petar Petrov
+## Version: 1.0.0
+## SavedVariablesPerCharacter: LostTrackDB
+
+LostTrack.lua
