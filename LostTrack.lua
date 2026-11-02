@@ -1,10 +1,9 @@
 --[[ Lost Track - automatic hunter tracking for WotLK 3.3.5
-     Keeps the hunter's tracking on the target's creature type: target a beast
-     and Track Beasts goes up, target a humanoid and Track Humanoids replaces
-     it. With no target, the tracking that was up before Lost Track took over
-     (Find Herbs, Track Undead, ...) is restored, or none if there was none.
-     A tracking you switch to yourself after that is left alone: only the
-     tracking this addon put up is ever changed back.
+     While in combat, keeps the hunter's tracking on the target's creature
+     type: target a beast and Track Beasts goes up, target a humanoid and
+     Track Humanoids replaces it. Tracking is never touched out of combat.
+     Losing the target in combat, or combat ending, turns tracking off
+     entirely (no previous tracking is restored).
 
      /lt on|off   enable or disable
      /lt status   show what it is doing
@@ -16,8 +15,7 @@
 local ADDON_NAME = ...
 local _, MY_CLASS = UnitClass("player") -- never changes, so looked up once
 local db
-local applied -- index of the tracking type Lost Track set, nil when it set none
-local saved   -- index of the tracking it replaced, restored once the target is gone (nil = none)
+local engaged -- Lost Track is controlling tracking for this combat
 
 ---------------------------------------------------------------------------
 -- Logging
@@ -63,44 +61,33 @@ local function CurrentTracking()
 	end
 end
 
--- Bring tracking in line with the current target. `applied` is the type Lost
--- Track set and `saved` the tracking it replaced; with no target the player
--- gets that original tracking back. Clearing never touches a tracking the
--- player chose themselves (e.g. Find Herbs) or one they switched to after the
--- addon picked.
+-- Turn tracking off. In 3.3.5 SetTracking(nil) is the "None" option.
+local function ClearTracking()
+	if CurrentTracking() then
+		SetTracking(nil)
+	end
+end
+
+-- Bring tracking in line with the current target, in combat only. Out of
+-- combat tracking belongs to the player and is never touched.
 local function Update()
 	if not db or not db.enabled or MY_CLASS ~= "HUNTER" then return end
+	if not UnitAffectingCombat("player") then return end
+	engaged = true
 
-	-- Target cleared: put back the tracking Lost Track replaced
-	if not UnitExists("target") then
-		if applied then
-			-- skip while tracking is no longer the type we set, or when the
-			-- type to restore is already active: SetTracking on the active
-			-- type would toggle tracking off
-			if CurrentTracking() == applied and saved ~= applied then
-				SetTracking(saved) -- nil when the player had no tracking before
-			end
-			applied = nil
-			saved = nil
-		end
-		return
+	local index
+	if UnitExists("target") then
+		local creatureType = UnitCreatureType("target")
+		if creatureType then index = TrackingFor(creatureType) end
 	end
 
-	local creatureType = UnitCreatureType("target")
-	if not creatureType then return end
-
-	local index = TrackingFor(creatureType)
-	if not index then return end -- nothing tracks this type, leave tracking alone
-
-	local current = CurrentTracking()
-	if current ~= index then
-		-- Remember the player's own tracking, unless what is up is a type we
-		-- set ourselves for an earlier target.
-		if not applied or current ~= applied then
-			saved = current
+	if index then
+		if CurrentTracking() ~= index then
+			SetTracking(index)
 		end
-		SetTracking(index)
-		applied = index
+	else
+		-- no target, target deselected, or a creature type with no tracking
+		ClearTracking()
 	end
 end
 
@@ -115,11 +102,12 @@ local function Status()
 	end
 	local index = CurrentTracking()
 	local name = index and GetTrackingInfo(index) or "off"
+	local when = UnitAffectingCombat("player") and "in combat" or "out of combat"
 	if not UnitExists("target") then
-		Log("Lost Track is " .. state .. ". No target; tracking is " .. name .. ".")
+		Log(string.format("Lost Track is %s (%s). No target; tracking is %s.", state, when, name))
 	else
-		Log(string.format("Lost Track is %s. Target: %s; tracking is %s.",
-			state, UnitCreatureType("target") or "unknown", name))
+		Log(string.format("Lost Track is %s (%s). Target: %s; tracking is %s.",
+			state, when, UnitCreatureType("target") or "unknown", name))
 	end
 end
 
@@ -141,6 +129,7 @@ SlashCmdList["LOSTTRACK"] = function(msg)
 		Status()
 	elseif cmd == "off" then
 		db.enabled = false
+		engaged = false -- leave tracking alone once disabled
 		Status()
 	elseif cmd == "toggle" then
 		db.enabled = not db.enabled
@@ -162,6 +151,8 @@ local frame = CreateFrame("Frame")
 frame:RegisterEvent("ADDON_LOADED")
 frame:RegisterEvent("PLAYER_ENTERING_WORLD")
 frame:RegisterEvent("PLAYER_TARGET_CHANGED")
+frame:RegisterEvent("PLAYER_REGEN_DISABLED")
+frame:RegisterEvent("PLAYER_REGEN_ENABLED")
 
 frame:SetScript("OnEvent", function(self, event, arg1)
 	if event == "ADDON_LOADED" then
@@ -175,6 +166,16 @@ frame:SetScript("OnEvent", function(self, event, arg1)
 		end
 		return
 	end
-	-- a new or cleared target, or a zone-in with a target already up
+	-- combat over: tracking off, nothing restored
+	if event == "PLAYER_REGEN_ENABLED" then
+		if engaged then
+			engaged = false
+			if db and db.enabled and MY_CLASS == "HUNTER" then
+				ClearTracking()
+			end
+		end
+		return
+	end
+	-- entering combat, a new or cleared target, or a zone-in with combat running
 	Update()
 end)
